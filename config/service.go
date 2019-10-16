@@ -1,4 +1,4 @@
-package gelib
+package config
 
 import (
 	"encoding/json"

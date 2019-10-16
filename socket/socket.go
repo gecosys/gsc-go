@@ -7,7 +7,7 @@ import (
 	"io"
 	"net"
 
-	pb "gelib/protos"
+	pb "github.com/gecosys/gsc-go/message"
 
 	"github.com/golang/protobuf/proto"
 )

@@ -4,7 +4,7 @@ import (
 	"log"
 	"time"
 
-	client "gelib/client"
+	"github.com/gecosys/gsc-go/client"
 )
 
 func main() {

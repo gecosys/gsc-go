@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package gelib;
+package message;
 
 message Ticket {
     string connID = 1;

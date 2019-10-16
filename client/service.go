@@ -13,9 +13,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	config "gelib/config"
-	pb "gelib/protos"
-	socket "gelib/socket"
+	pb "github.com/gecosys/gsc-go/message"
+	"github.com/gecosys/gsc-go/socket"
+	"github.com/gecosys/gsc-go/config"
 
 	"github.com/golang/protobuf/proto"
 )

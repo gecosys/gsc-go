@@ -1,4 +1,4 @@
-module gelib
+module github.com/gecosys/gsc-go
 
 go 1.13
 
