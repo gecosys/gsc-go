@@ -13,15 +13,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gecosys/gsc-go/config"
 	pb "github.com/gecosys/gsc-go/message"
 	"github.com/gecosys/gsc-go/socket"
-	"github.com/gecosys/gsc-go/config"
 
 	"github.com/golang/protobuf/proto"
 )
 
 // Version is version of hub
-const Version = "2.0"
+const Version = "2.1.0"
 
 var once sync.Once
 var instance *client
@@ -224,7 +224,7 @@ func (c *client) RenameConnection(aliasName string) error {
 		data    []byte
 		httpRes *http.Response
 		body    = new(bytes.Buffer)
-		res     socket.GERenameResposne
+		res     socket.GEResponse
 	)
 
 	json.NewEncoder(body).Encode(socket.GEConnection{
@@ -249,10 +249,14 @@ func (c *client) RenameConnection(aliasName string) error {
 		return err
 	}
 
-	json.NewDecoder(bytes.NewBuffer(data)).Decode(&res)
+	err = json.Unmarshal(data, &res)
+	if err != nil {
+		return err
+	}
 	if res.ReturnCode < 1 {
 		return errors.New(res.Data.(string))
 	}
+
 	c.conn.AliasName = aliasName
 	return nil
 }
@@ -274,9 +278,10 @@ func (c *client) register(address string) (socket.GEHostHub, error) {
 		err     error
 		data    []byte
 		httpRes *http.Response
+		res     socket.GEResponse
 		body    = new(bytes.Buffer)
-		res     socket.GERegisterResponse
 	)
+
 	json.NewEncoder(body).Encode(c.conn)
 
 	httpRes, err = http.Post(
@@ -285,17 +290,29 @@ func (c *client) register(address string) (socket.GEHostHub, error) {
 		body,
 	)
 	if err != nil {
-		return res.Data, err
+		return socket.GEHostHub{}, err
 	}
 
 	defer httpRes.Body.Close()
 	data, err = ioutil.ReadAll(httpRes.Body)
 	if err != nil {
-		return res.Data, err
+		return socket.GEHostHub{}, err
 	}
 
-	json.NewDecoder(bytes.NewBuffer(data)).Decode(&res)
-	return res.Data, nil
+	err = json.Unmarshal(data, &res)
+	if err != nil {
+		return socket.GEHostHub{}, err
+	}
+	if res.ReturnCode != 1 {
+		return socket.GEHostHub{}, errors.New(res.Data.(string))
+	}
+
+	var dict = res.Data.(map[string]interface{})
+	return socket.GEHostHub{
+		ID:    dict["ID"].(string),
+		Host:  dict["Host"].(string),
+		Token: dict["Token"].(string),
+	}, nil
 }
 
 func (c *client) validateMessage(hmac, data []byte) bool {

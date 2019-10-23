@@ -19,15 +19,7 @@ type GEHostHub struct {
 	ID    string
 }
 
-type GERegisterResponse struct {
-	StatusCode int
-	ReturnCode int
-	Data       GEHostHub
-	Timestamp  int64
-}
-
-type GERenameResposne struct {
-	StatusCode int
+type GEResponse struct {
 	ReturnCode int
 	Data       interface{}
 	Timestamp  int64
