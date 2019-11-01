@@ -1,8 +1,40 @@
 syntax = "proto3";
 
-package message;
+package gschub;
+
+message PublicKey {
+    string E = 1;
+    string N = 2;
+}
+
+message SharedKey {
+    bytes key = 1; // shared key encrypted by public key
+    Cipher cipher = 2;
+}
+
+message Cipher {
+    bytes IV = 1; // plain text (if IV is empty, data will be not encrypted)
+    bytes data = 2; // encrypted by the shared key
+}
+
+message CipherTicket {
+    bytes ID = 1; // connection's id encrypted by public key
+    Cipher cipher = 2;
+}
+
+message Client {
+    string ID = 1;
+    string token = 2;
+    string aliasName = 3;
+}
 
 message Ticket {
+    string address = 1;
+    string secretKey = 2;
+    ClientTicket clientTicket = 3;
+}
+
+message ClientTicket {
     string connID = 1;
     string token = 2;
 }
@@ -12,6 +44,7 @@ message Letter {
         Single = 0;
         Group = 1;
         Ping = 2;
+        Rename = 3; // data should be Connection
     }
     Type type = 1;
     string receiver = 2;
@@ -23,10 +56,4 @@ message Reply {
     bytes HMAC = 2; // HMAC SHA256
     bytes data = 3;
     int32 timestamp = 4;
-}
-
-message Data {
-    string sender = 1;
-    bytes data = 2;
-    int32 timestamp = 3;
 }

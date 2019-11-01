@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,13 +16,14 @@ import (
 
 	"github.com/gecosys/gsc-go/config"
 	pb "github.com/gecosys/gsc-go/message"
+	security "github.com/gecosys/gsc-go/security"
 	"github.com/gecosys/gsc-go/socket"
 
 	"github.com/golang/protobuf/proto"
 )
 
 // Version is version of hub
-const Version = "2.1.0"
+const Version = "2.2.0"
 
 var once sync.Once
 var instance *client
@@ -36,8 +38,8 @@ type GEHMessage struct {
 // GEHClient is client which communicates with Goldeneye Hubs System
 type GEHClient interface {
 	OpenConn(aliasName string) error
-	Listen() (chan GEHMessage, chan error)
-	SendMessage(receiver string, data []byte) error
+	Listen() (chan *GEHMessage, chan error)
+	SendMessage(receiver string, data []byte, isEncrypted bool) error
 	RenameConnection(aliasName string) error
 
 	GetID() string
@@ -55,33 +57,38 @@ func GetClient() GEHClient {
 			return
 		}
 		instance = new(client)
+		instance.isOpen = false
 	})
 	return instance
 }
 
 type client struct {
+	isOpen              bool
 	config              *config.Config
-	conn                socket.GEConnection
-	clientInfo          socket.GEClientInfo
+	clientInfo          *pb.Client
+	clientTicket        *pb.ClientTicket
 	socket              socket.GEHSocket
-	safeConnection      sync.Mutex
 	isDisconnected      int32
 	waitForReconnecting sync.WaitGroup
 }
 
 // OpenConn opens connection to GSCHub
 func (c *client) OpenConn(aliasName string) error {
+	if c.isOpen {
+		return nil
+	}
+	c.isOpen = true
+
 	conf, err := config.GetConfig()
 	if err != nil {
 		return err
 	}
 	c.config = conf
 
-	c.conn = socket.GEConnection{
+	c.clientInfo = &pb.Client{
 		ID:        conf.ID,
 		Token:     conf.Token,
 		AliasName: aliasName,
-		Ver:       Version,
 	}
 
 	err = c.connect()
@@ -93,15 +100,15 @@ func (c *client) OpenConn(aliasName string) error {
 }
 
 func (c *client) GetID() string {
-	return c.clientInfo.ID
+	return c.clientTicket.ConnID
 }
 
 func (c *client) GetVersion() string {
-	return c.conn.Ver
+	return Version
 }
 
 func (c *client) GetAliasName() string {
-	return c.conn.AliasName
+	return c.clientInfo.AliasName
 }
 
 func calcHMAC(key string, data []byte) []byte {
@@ -110,10 +117,10 @@ func calcHMAC(key string, data []byte) []byte {
 	return h.Sum(nil)
 }
 
-func (c *client) Listen() (chan GEHMessage, chan error) {
+func (c *client) Listen() (chan *GEHMessage, chan error) {
 	var chanError = make(chan error)
-	var chanMessage = make(chan GEHMessage)
-	go func(chanMessage chan GEHMessage, chanError chan error) {
+	var chanMessage = make(chan *GEHMessage)
+	go func(chanMessage chan *GEHMessage, chanError chan error) {
 		var chanClientMessage = c.socket.ListenMessage()
 		for {
 			msg, ok := <-chanClientMessage
@@ -130,26 +137,10 @@ func (c *client) Listen() (chan GEHMessage, chan error) {
 				continue
 			}
 
-			data, err := proto.Marshal(&pb.Data{
+			chanMessage <- &GEHMessage{
 				Sender:    msg.Sender,
 				Data:      msg.Data,
 				Timestamp: msg.Timestamp,
-			})
-			if err != nil {
-				chanError <- err
-				continue
-			}
-
-			var recvMsg pb.Data
-			err = proto.Unmarshal(data, &recvMsg)
-			if err != nil {
-				chanError <- err
-				continue
-			}
-			chanMessage <- GEHMessage{
-				Sender:    recvMsg.Sender,
-				Data:      recvMsg.Data,
-				Timestamp: recvMsg.Timestamp,
 			}
 		}
 	}(chanMessage, chanError)
@@ -178,141 +169,226 @@ func (c *client) loopAction() {
 
 func (c *client) connect() error {
 	var (
-		err  error
-		res  socket.GEHostHub
-		data []byte
+		err    error
+		iv     []byte
+		data   []byte
+		ticket *pb.Ticket
 	)
 
-	res, err = c.register(c.config.Host)
+	// Setup public key + shared key
+	err = c.setupSecurity(c.config.Host)
 	if err != nil {
 		return err
 	}
 
-	socket, err := socket.NewSocketClient(res.Host)
+	// Register connection
+	ticket, err = c.register(c.config.Host)
 	if err != nil {
 		return err
 	}
 
-	data, err = proto.Marshal(&pb.Ticket{
-		ConnID: res.ID,
-		Token:  res.Token,
+	// Build activation message
+	data, err = proto.Marshal(ticket.ClientTicket)
+	if err != nil {
+		return err
+	}
+	iv, data, err = security.Encrypt(data)
+
+	id, err := security.EncryptRSA([]byte(ticket.ClientTicket.ConnID))
+	if err != nil {
+		return err
+	}
+
+	data, err = proto.Marshal(&pb.CipherTicket{
+		ID: id,
+		Cipher: &pb.Cipher{
+			IV:   iv,
+			Data: data,
+		},
 	})
 	if err != nil {
 		return err
 	}
 
+	// Create and activate socket
+	socket, err := socket.NewSocketClient(ticket.Address)
+	if err != nil {
+		return err
+	}
 	err = socket.SendMessage(data)
 	if err != nil {
 		return err
 	}
 
-	c.safeConnection.Lock()
 	if c.socket != nil {
 		c.socket.Close()
 	}
 	c.socket = socket
-	c.clientInfo.ID = res.ID
-	c.clientInfo.Token = res.Token
-	c.safeConnection.Unlock()
+	c.socket.SetSecretKey(ticket.SecretKey)
+	c.clientTicket = ticket.ClientTicket
 
 	return nil
 }
 
 func (c *client) RenameConnection(aliasName string) error {
 	var (
-		err     error
-		data    []byte
-		httpRes *http.Response
-		body    = new(bytes.Buffer)
-		res     socket.GEResponse
+		err  error
+		data []byte
 	)
 
-	json.NewEncoder(body).Encode(socket.GEConnection{
-		ID:        c.clientInfo.ID,
-		Token:     c.clientInfo.Token,
+	data, err = proto.Marshal(&pb.Client{
+		ID:        c.clientTicket.ConnID,
+		Token:     c.clientTicket.Token,
 		AliasName: aliasName,
-		Ver:       c.conn.Ver,
 	})
-
-	httpRes, err = http.Post(
-		fmt.Sprintf("%s/v1/conn/rename", c.config.Host),
-		"application/json",
-		body,
-	)
 	if err != nil {
 		return err
 	}
 
-	defer httpRes.Body.Close()
-	data, err = ioutil.ReadAll(httpRes.Body)
+	err = c.sendMessage(pb.Letter_Rename, "", data, true)
 	if err != nil {
 		return err
 	}
-
-	err = json.Unmarshal(data, &res)
-	if err != nil {
-		return err
-	}
-	if res.ReturnCode < 1 {
-		return errors.New(res.Data.(string))
-	}
-
-	c.conn.AliasName = aliasName
+	c.clientInfo.AliasName = aliasName
 	return nil
 }
 
-func (c *client) SendMessage(receiver string, data []byte) error {
-	buffer, err := proto.Marshal(&pb.Letter{
-		Type:     pb.Letter_Single,
+func (c *client) SendMessage(receiver string, data []byte, isEncrypted bool) error {
+	return c.sendMessage(pb.Letter_Single, receiver, data, isEncrypted)
+}
+
+func (c *client) sendMessage(letterType pb.Letter_Type, receiver string, data []byte, isEncrypted bool) error {
+	buffer, err := c.buildMessage(&pb.Letter{
+		Type:     letterType,
 		Receiver: receiver,
 		Data:     data,
-	})
+	}, isEncrypted)
 	if err != nil {
 		return err
 	}
 	return c.socket.SendMessage(buffer)
 }
 
-func (c *client) register(address string) (socket.GEHostHub, error) {
-	var (
-		err     error
-		data    []byte
-		httpRes *http.Response
-		res     socket.GEResponse
-		body    = new(bytes.Buffer)
-	)
-
-	json.NewEncoder(body).Encode(c.conn)
-
-	httpRes, err = http.Post(
-		fmt.Sprintf("%s/v1/conn/register", address),
-		"application/json",
-		body,
-	)
+func (c *client) setupSecurity(address string) error {
+	httpRes, err := http.Get(fmt.Sprintf("%s/public-key", c.config.Host))
 	if err != nil {
-		return socket.GEHostHub{}, err
+		return err
 	}
 
 	defer httpRes.Body.Close()
+
+	data, err := ioutil.ReadAll(httpRes.Body)
+	if err != nil {
+		return err
+	}
+	var res socket.GEResponse
+	err = json.Unmarshal(data, &res)
+	if err != nil {
+		return err
+	}
+
+	if res.ReturnCode != 1 {
+		return errors.New(res.Data)
+	}
+
+	buffer, err := base64.StdEncoding.DecodeString(res.Data)
+	if err != nil {
+		return err
+	}
+
+	return security.Setup(buffer)
+}
+
+func (c *client) register(address string) (*pb.Ticket, error) {
+	var (
+		err     error
+		iv      []byte
+		data    []byte
+		body    []byte
+		httpReq *http.Request
+		httpRes *http.Response
+		res     socket.GEResponse
+	)
+
+	// Build body
+	data, err = proto.Marshal(c.clientInfo)
+	if err != nil {
+		return nil, err
+	}
+	iv, data, err = security.Encrypt(data)
+	if err != nil {
+		return nil, err
+	}
+
+	key, err := security.GetSharedKey()
+	if err != nil {
+		return nil, err
+	}
+
+	sharedKey := pb.SharedKey{
+		Key: key,
+		Cipher: &pb.Cipher{
+			IV:   iv,
+			Data: data,
+		},
+	}
+	body, err = proto.Marshal(&sharedKey)
+
+	// Build request
+	httpReq, err = http.NewRequest(
+		"POST",
+		fmt.Sprintf("%s/conn/register", address),
+		bytes.NewBuffer([]byte(base64.StdEncoding.EncodeToString(body))),
+	)
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Version", Version)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	// Send request
+	client := http.Client{
+		Timeout: 5 * time.Second,
+	}
+	httpRes, err = client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer httpRes.Body.Close()
+
+	// Parse response
 	data, err = ioutil.ReadAll(httpRes.Body)
 	if err != nil {
-		return socket.GEHostHub{}, err
+		return nil, err
 	}
 
 	err = json.Unmarshal(data, &res)
 	if err != nil {
-		return socket.GEHostHub{}, err
+		return nil, err
 	}
 	if res.ReturnCode != 1 {
-		return socket.GEHostHub{}, errors.New(res.Data.(string))
+		return nil, errors.New(res.Data)
 	}
 
-	var dict = res.Data.(map[string]interface{})
-	return socket.GEHostHub{
-		ID:    dict["ID"].(string),
-		Host:  dict["Host"].(string),
-		Token: dict["Token"].(string),
-	}, nil
+	buffer, err := base64.StdEncoding.DecodeString(res.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	var cipher pb.Cipher
+	err = proto.Unmarshal(buffer, &cipher)
+	if err != nil {
+		return nil, err
+	}
+
+	data, err = security.Decrypt(cipher.IV, cipher.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	ticket := new(pb.Ticket)
+	err = proto.Unmarshal(data, ticket)
+	return ticket, nil
 }
 
 func (c *client) validateMessage(hmac, data []byte) bool {
@@ -334,12 +410,25 @@ func (c *client) validateMessage(hmac, data []byte) bool {
 }
 
 func (c *client) ping() error {
-	buffer, err := proto.Marshal(&pb.Letter{
-		Type: pb.Letter_Ping,
-		Data: []byte("Ping"),
-	})
+	return c.sendMessage(pb.Letter_Ping, "", []byte("Ping"), true)
+}
+
+func (c *client) buildMessage(letter *pb.Letter, isEncrypted bool) ([]byte, error) {
+	buffer, err := proto.Marshal(letter)
 	if err != nil {
-		return err
+		return []byte{}, err
 	}
-	return c.socket.SendMessage(buffer)
+
+	iv := []byte{}
+	if isEncrypted {
+		iv, buffer, err = security.Encrypt(buffer)
+		if err != nil {
+			return []byte{}, err
+		}
+	}
+
+	return proto.Marshal(&pb.Cipher{
+		IV:   iv,
+		Data: buffer,
+	})
 }

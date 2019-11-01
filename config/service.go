@@ -11,10 +11,9 @@ var onceConfig sync.Once
 var conf *Config
 
 type Config struct {
-	Host      string `json:"host"`
-	ID        string `json:"id"`
-	Token     string `json:"token"`
-	PublicKey string `json:"public_key"`
+	Host  string `json:"host"`
+	ID    string `json:"id"`
+	Token string `json:"token"`
 }
 
 func GetConfig() (*Config, error) {

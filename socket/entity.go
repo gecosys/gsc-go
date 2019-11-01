@@ -13,14 +13,8 @@ type GEClientInfo struct {
 	Token string
 }
 
-type GEHostHub struct {
-	Host  string
-	Token string
-	ID    string
-}
-
 type GEResponse struct {
 	ReturnCode int
-	Data       interface{}
+	Data       string
 	Timestamp  int64
 }
