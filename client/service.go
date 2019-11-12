@@ -125,8 +125,8 @@ func (c *client) Listen() (chan *GEHMessage, chan error) {
 		for {
 			msg, ok := <-chanClientMessage
 			if !ok {
-				atomic.StoreInt32(&c.isDisconnected, 1)
 				c.waitForReconnecting.Add(1)
+				atomic.StoreInt32(&c.isDisconnected, 1)
 				c.waitForReconnecting.Wait()
 				chanClientMessage = c.socket.ListenMessage()
 				continue
@@ -155,13 +155,17 @@ func (c *client) loopAction() {
 	timer = time.NewTimer(timeDuration)
 
 	for range timer.C {
-		if atomic.LoadInt32(&c.isDisconnected) == 1 || c.ping() != nil {
+		if atomic.LoadInt32(&c.isDisconnected) == 1 {
 			if c.connect() != nil {
 				timer.Reset(timeDuration)
 				continue
 			}
-			atomic.StoreInt32(&c.isDisconnected, 0)
-			c.waitForReconnecting.Done()
+			if c.ping() == nil {
+				atomic.StoreInt32(&c.isDisconnected, 0)
+				c.waitForReconnecting.Done()
+			}
+		} else {
+			c.ping()
 		}
 		timer.Reset(timeDuration)
 	}
