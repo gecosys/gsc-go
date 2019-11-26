@@ -81,6 +81,7 @@ func (c *client) OpenConn(aliasName string) error {
 
 	conf, err := config.GetConfig()
 	if err != nil {
+		c.isOpen = false
 		return err
 	}
 	c.config = conf
@@ -93,6 +94,7 @@ func (c *client) OpenConn(aliasName string) error {
 
 	err = c.connect()
 	if err != nil {
+		c.isOpen = false
 		return err
 	}
 	go c.loopAction()
