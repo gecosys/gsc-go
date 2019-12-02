@@ -53,9 +53,6 @@ func GetClient() GEHClient {
 		return instance
 	}
 	once.Do(func() {
-		if instance != nil {
-			return
-		}
 		instance = new(client)
 		instance.isOpen = false
 	})

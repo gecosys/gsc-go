@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-var onceConfig sync.Once
+var mtxConfig sync.Mutex
 var conf *Config
 
 type Config struct {
@@ -26,24 +26,28 @@ func GetConfig() (*Config, error) {
 		file *os.File
 		data []byte
 	)
-	onceConfig.Do(func() {
-		if conf != nil {
-			return
-		}
 
-		file, err = os.Open("./gsc-services.json")
-		if err != nil {
-			return
-		}
-		defer file.Close()
+	mtxConfig.Lock()
+	defer mtxConfig.Unlock()
+	if conf != nil {
+		return conf, nil
+	}
 
-		data, err = ioutil.ReadAll(file)
-		if err != nil {
-			return
-		}
+	file, err = os.Open("./gsc-services.json")
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
 
-		conf = new(Config)
-		err = json.Unmarshal(data, conf)
-	})
+	data, err = ioutil.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+
+	conf = new(Config)
+	err = json.Unmarshal(data, conf)
+	if err != nil {
+		conf = nil
+	}
 	return conf, err
 }
